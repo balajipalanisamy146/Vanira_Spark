@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pandas
+openpyxl
+sqlalchemy
+psycopg2-binary
+python-multipart
+python-dotenv
+prophet==1.1.6

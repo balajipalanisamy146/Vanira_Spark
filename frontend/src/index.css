@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+body{
+  background:#070B1F;
+  color:white;
+  font-family:Inter,sans-serif;
+}
+.customer-page .customer-card {
+  background-color: #0B1730 !important;
+  border-color: #1E3A8A !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, .25);
+}
+
+.customer-page .customer-subcard {
+  background-color: #081124 !important;
+  border-color: rgba(30, 58, 138, .5) !important;
+}
+
+.sales-analytics-page .sales-analytics-card {
+  background-color: #0B1730 !important;
+  border-color: #1E3A8A !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, .25);
+}
+
+/* Hide scrollbars for elements with .no-scrollbar */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* Custom scrollbar - match page dark theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #050816;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1E3A8A;
+  border-radius: 99px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #2d4fa3;
+}
+
+::-webkit-scrollbar-corner {
+  background: #050816;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #1E3A8A #050816;
+}
