@@ -123,7 +123,10 @@ export default function Sidebar({ activePage, setActivePage }) {
                         Higher sales. A sustainable<br />
                         future.
                     </p>
-                    <button className="w-full bg-purple-600 hover:bg-purple-700 text-white text-[11px] font-semibold py-1.5 rounded-lg transition flex items-center justify-center gap-1.5">
+                    <button
+                        onClick={() => setActivePage("AI Chatbot")}
+                        className="w-full bg-purple-600 hover:bg-purple-700 text-white text-[11px] font-semibold py-1.5 rounded-lg transition flex items-center justify-center gap-1.5"
+                    >
                         Explore AI Agent
                         <ArrowRight size={14} />
                     </button>

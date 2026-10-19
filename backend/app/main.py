@@ -1,6 +1,16 @@
-from fastapi import FastAPI, UploadFile, File,  Query
+from fastapi import FastAPI, UploadFile, File, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any
 from pathlib import Path
+from app.chatbot import process_chat_query, get_dataset_bounds
+from app.metrics_service import get_verified_business_metrics, get_data_freshness_and_bounds
+from app.ai_insights_service import (
+    get_ai_business_insights,
+    update_insight_lifecycle_status,
+    invalidate_insights_cache,
+    ensure_insight_lifecycle_schema
+)
 from app.analytics import get_sales_summary
 from app.analytics import get_sales_trend
 from app.analytics import get_top_products
@@ -107,6 +117,7 @@ app = FastAPI()
 create_upload_history_table()
 ensure_forecast_schema()
 ensure_inventory_schema()
+ensure_insight_lifecycle_schema()
 
 app.add_middleware(
     CORSMiddleware,
@@ -152,6 +163,9 @@ async def upload_file(
         f.write(await file.read())
 
     result = process_excel(str(file_path))
+
+    if isinstance(result, dict) and result.get("status") == "success":
+        invalidate_insights_cache()
 
     return result
 
@@ -539,3 +553,137 @@ def get_inventory_alerts():
 @app.get("/inventory/movement")
 def get_inventory_movement():
     return inventory_movement()
+
+
+# ============================================================
+# AI BUSINESS CHATBOT ENDPOINTS
+# ============================================================
+
+class ChatQueryRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=500, description="Natural language user question")
+    session_id: Optional[str] = Field(None, description="Optional session/user identifier")
+
+
+@app.post("/chat/query")
+def chat_query_endpoint(payload: ChatQueryRequest):
+    return process_chat_query(payload.message)
+
+
+@app.get("/chat/status")
+def chat_status_endpoint():
+    try:
+        bounds = get_dataset_bounds()
+        return {
+            "status": "healthy",
+            "connected": True,
+            "database": "PostgreSQL",
+            "sales_records": bounds.get("total_rows", 0),
+            "date_range": bounds.get("date_range_label", ""),
+            "min_date": bounds.get("min_date"),
+            "max_date": bounds.get("max_date"),
+        }
+    except Exception as e:
+        return {
+            "status": "degraded",
+            "connected": False,
+            "error": str(e)
+        }
+
+
+@app.get("/chat/suggestions")
+def chat_suggestions_endpoint():
+    return {
+        "categories": [
+            {
+                "category": "Sales & Revenue",
+                "prompts": [
+                    "What are my total sales and profit?",
+                    "How much revenue did I generate this month?",
+                    "Compare this month with the previous month",
+                    "Which month had the highest sales?",
+                    "Are sales increasing or decreasing?"
+                ]
+            },
+            {
+                "category": "Products & Categories",
+                "prompts": [
+                    "Show my top 10 products by sales",
+                    "Which product generates the highest profit?",
+                    "Which category contributes the most revenue?",
+                    "Which products have low sales?",
+                    "Which products have declining sales?"
+                ]
+            },
+            {
+                "category": "Customer Analytics",
+                "prompts": [
+                    "How many customers do I have?",
+                    "How many repeat customers do I have?",
+                    "Which customer segments generate the most revenue?",
+                    "How has customer purchasing behavior changed?"
+                ]
+            },
+            {
+                "category": "Inventory & Stock Risks",
+                "prompts": [
+                    "Which products have low stock?",
+                    "Which products might run out of stock?",
+                    "What inventory risks should I investigate?",
+                    "Which products have slow-moving inventory?"
+                ]
+            }
+        ]
+    }
+
+
+# ============================================================
+# AI BUSINESS INTELLIGENCE & INSIGHTS ENDPOINTS
+# ============================================================
+
+class InsightStatusUpdateRequest(BaseModel):
+    insight_id: str = Field(..., min_length=1, max_length=120)
+    status: str = Field(..., description="Allowed: new, acknowledged, in_progress, resolved, dismissed")
+    notes: Optional[str] = Field(None, max_length=1000)
+
+
+@app.get("/insights/metrics")
+def insights_metrics_endpoint(
+    period: str = Query(default="latest_month", regex="^(latest_month|last_30_days|all_time)$")
+):
+    try:
+        return get_verified_business_metrics(period)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to calculate metrics: {str(e)}")
+
+
+@app.get("/insights/briefing")
+def insights_briefing_endpoint(
+    period: str = Query(default="latest_month", regex="^(latest_month|last_30_days|all_time)$"),
+    force_refresh: bool = Query(default=False)
+):
+    try:
+        return get_ai_business_insights(period=period, force_refresh=force_refresh)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate insights: {str(e)}")
+
+
+@app.post("/insights/status")
+def insights_status_endpoint(payload: InsightStatusUpdateRequest):
+    try:
+        return update_insight_lifecycle_status(
+            insight_id=payload.insight_id,
+            status=payload.status,
+            notes=payload.notes
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update insight status: {str(e)}")
+
+
+@app.post("/insights/refresh")
+def insights_refresh_endpoint(
+    period: str = Query(default="latest_month", regex="^(latest_month|last_30_days|all_time)$")
+):
+    invalidate_insights_cache()
+    return get_ai_business_insights(period=period, force_refresh=True)

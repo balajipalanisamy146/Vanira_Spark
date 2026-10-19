@@ -12,6 +12,7 @@ import ProductAnalyticsDetail from "./pages/ProductAnalyticsDetail";
 import Inventory from "./pages/Inventory";
 import DataQuality from "./pages/DataQuality";
 import AIInsights from "./pages/AIInsights";
+import AIChatbot from "./pages/AIChatbot";
 
 function App() {
 
@@ -72,6 +73,9 @@ function App() {
 
             case "AI Insights":
                 return <AIInsights />;
+
+            case "AI Chatbot":
+                return <AIChatbot onNavigate={navigateToPage} />;
 
             case "Dashboard":
             default:

@@ -9,43 +9,71 @@ from app.database import engine
 def get_sales_summary():
 
     query = text("""
+        WITH anchor AS (
+            SELECT COALESCE(MAX(sale_date), CURRENT_DATE) AS max_date FROM sales
+        ),
+        bounds AS (
+            SELECT
+                max_date,
+                (max_date - INTERVAL '6 days')::date AS current_start,
+                max_date AS current_end,
+                (max_date - INTERVAL '13 days')::date AS prev_start,
+                (max_date - INTERVAL '7 days')::date AS prev_end
+            FROM anchor
+        )
         SELECT
             COALESCE(SUM(total_amount), 0) AS total_sales,
             COALESCE(SUM(profit), 0) AS total_profit,
             COUNT(DISTINCT invoice_id) AS total_orders,
-                        COALESCE(SUM(quantity), 0) AS total_quantity,
-                        COALESCE(SUM(total_amount) FILTER (
-                                WHERE sale_date >= DATE_TRUNC('week', CURRENT_DATE)::date
-                                    AND sale_date <= CURRENT_DATE
-                        ), 0) AS current_week_sales,
-                        COALESCE(SUM(total_amount) FILTER (
-                                WHERE sale_date >= DATE_TRUNC('week', CURRENT_DATE)::date - 7
-                                    AND sale_date < DATE_TRUNC('week', CURRENT_DATE)::date
-                                    AND sale_date <= CURRENT_DATE - 7
-                        ), 0) AS previous_week_sales,
-                        COALESCE(SUM(profit) FILTER (
-                                WHERE sale_date >= DATE_TRUNC('week', CURRENT_DATE)::date
-                                    AND sale_date <= CURRENT_DATE
-                        ), 0) AS current_week_profit,
-                        COALESCE(SUM(profit) FILTER (
-                                WHERE sale_date >= DATE_TRUNC('week', CURRENT_DATE)::date - 7
-                                    AND sale_date < DATE_TRUNC('week', CURRENT_DATE)::date
-                                    AND sale_date <= CURRENT_DATE - 7
-                        ), 0) AS previous_week_profit,
-                        COUNT(DISTINCT invoice_id) FILTER (
-                                WHERE sale_date >= DATE_TRUNC('week', CURRENT_DATE)::date
-                                    AND sale_date <= CURRENT_DATE
-                        ) AS current_week_orders,
-                        COUNT(DISTINCT invoice_id) FILTER (
-                                WHERE sale_date >= DATE_TRUNC('week', CURRENT_DATE)::date - 7
-                                    AND sale_date < DATE_TRUNC('week', CURRENT_DATE)::date
-                                    AND sale_date <= CURRENT_DATE - 7
-                        ) AS previous_week_orders
+            COALESCE(SUM(quantity), 0) AS total_quantity,
+            COALESCE(SUM(total_amount) FILTER (
+                WHERE sale_date BETWEEN bounds.current_start AND bounds.current_end
+            ), 0) AS current_week_sales,
+            COALESCE(SUM(total_amount) FILTER (
+                WHERE sale_date BETWEEN bounds.prev_start AND bounds.prev_end
+            ), 0) AS previous_week_sales,
+            COALESCE(SUM(profit) FILTER (
+                WHERE sale_date BETWEEN bounds.current_start AND bounds.current_end
+            ), 0) AS current_week_profit,
+            COALESCE(SUM(profit) FILTER (
+                WHERE sale_date BETWEEN bounds.prev_start AND bounds.prev_end
+            ), 0) AS previous_week_profit,
+            COUNT(DISTINCT invoice_id) FILTER (
+                WHERE sale_date BETWEEN bounds.current_start AND bounds.current_end
+            ) AS current_week_orders,
+            COUNT(DISTINCT invoice_id) FILTER (
+                WHERE sale_date BETWEEN bounds.prev_start AND bounds.prev_end
+            ) AS previous_week_orders,
+            bounds.max_date,
+            bounds.current_start,
+            bounds.current_end,
+            bounds.prev_start,
+            bounds.prev_end
         FROM sales
+        CROSS JOIN bounds
+        GROUP BY bounds.max_date, bounds.current_start, bounds.current_end, bounds.prev_start, bounds.prev_end
     """)
 
     with engine.connect() as connection:
         result = connection.execute(query).mappings().first()
+
+    if not result:
+        return {
+            "total_sales": 0.0,
+            "total_profit": 0.0,
+            "total_orders": 0,
+            "total_quantity": 0,
+            "profit_margin": 0.0,
+            "sales_change": None,
+            "sales_change_label": "N/A",
+            "sales_change_positive": None,
+            "orders_change": None,
+            "orders_change_positive": None,
+            "profit_change": None,
+            "profit_change_positive": None,
+            "margin_change": "0.00 pp",
+            "margin_change_positive": True,
+        }
 
     total_sales = float(result["total_sales"] or 0)
     total_profit = float(result["total_profit"] or 0)
@@ -83,20 +111,25 @@ def get_sales_summary():
         "total_orders": int(result["total_orders"] or 0),
         "total_quantity": int(result["total_quantity"] or 0),
         "profit_margin": round(profit_margin, 2),
-        "sales_change": f"{sales_change:+.2f}%",
-        "sales_change_positive": sales_change >= 0,
-        "orders_change": f"{orders_change:+.2f}%",
-        "orders_change_positive": orders_change >= 0,
-        "profit_change": f"{profit_change:+.2f}%",
-        "profit_change_positive": profit_change >= 0,
+        "sales_change": f"{sales_change:+.2f}%" if sales_change is not None else "N/A",
+        "sales_change_positive": sales_change >= 0 if sales_change is not None else None,
+        "orders_change": f"{orders_change:+.2f}%" if orders_change is not None else "N/A",
+        "orders_change_positive": orders_change >= 0 if orders_change is not None else None,
+        "profit_change": f"{profit_change:+.2f}%" if profit_change is not None else "N/A",
+        "profit_change_positive": profit_change >= 0 if profit_change is not None else None,
         "margin_change": f"{margin_change:+.2f} pp",
         "margin_change_positive": margin_change >= 0,
+        "reporting_period": "All-Time",
+        "comparison_window": f"{result['current_start']} to {result['current_end']} vs {result['prev_start']} to {result['prev_end']}",
+        "latest_data_date": result["max_date"].isoformat() if result["max_date"] else None,
     }
 
 
 def _percentage_change(current, previous):
     if previous == 0:
-        return 0.0 if current == 0 else 100.0
+        if current == 0:
+            return None
+        return 100.0
 
     return round((current - previous) / abs(previous) * 100, 2)
 
@@ -289,9 +322,11 @@ def get_category_sales():
 
     query = text("""
         SELECT
-            COALESCE(NULLIF(TRIM(product_category), ''), 'Unknown')
-                AS category,
-            COALESCE(SUM(total_amount), 0) AS sales
+            COALESCE(NULLIF(TRIM(product_category), ''), 'Unknown') AS category,
+            COALESCE(SUM(total_amount), 0) AS sales,
+            COALESCE(SUM(profit), 0) AS profit,
+            COUNT(DISTINCT invoice_id) AS orders,
+            COALESCE(SUM(quantity), 0) AS quantity
         FROM sales
         GROUP BY
             COALESCE(NULLIF(TRIM(product_category), ''), 'Unknown')
@@ -301,10 +336,18 @@ def get_category_sales():
     with engine.connect() as connection:
         result = connection.execute(query).mappings().all()
 
+    total_sales = sum(float(r["sales"] or 0) for r in result)
+
     return [
         {
             "category": row["category"],
-            "sales": round(float(row["sales"] or 0), 2)
+            "sales": round(float(row["sales"] or 0), 2),
+            "revenue": round(float(row["sales"] or 0), 2),
+            "profit": round(float(row["profit"] or 0), 2),
+            "orders": int(row["orders"] or 0),
+            "quantity": int(row["quantity"] or 0),
+            "profit_margin": round((float(row["profit"] or 0) / float(row["sales"] or 1) * 100), 2) if float(row["sales"] or 0) > 0 else 0.0,
+            "share_percentage": round((float(row["sales"] or 0) / total_sales * 100), 2) if total_sales > 0 else 0.0,
         }
         for row in result
     ]
@@ -563,8 +606,14 @@ def get_top_profitable_products():
     query = text("""
         SELECT
             product_name,
-            COALESCE(SUM(profit), 0) AS profit
+            COALESCE(MAX(brand), 'Unknown') AS brand,
+            COALESCE(MAX(product_category), 'Unknown') AS category,
+            COALESCE(SUM(total_amount), 0) AS revenue,
+            COALESCE(SUM(profit), 0) AS profit,
+            COUNT(DISTINCT invoice_id) AS orders,
+            COALESCE(SUM(quantity), 0) AS quantity_sold
         FROM sales
+        WHERE product_name IS NOT NULL AND TRIM(product_name) <> ''
         GROUP BY product_name
         ORDER BY profit DESC
         LIMIT 10
@@ -576,7 +625,13 @@ def get_top_profitable_products():
     return [
         {
             "product_name": row["product_name"],
-            "profit": round(float(row["profit"] or 0), 2)
+            "brand": row["brand"],
+            "category": row["category"],
+            "profit": round(float(row["profit"] or 0), 2),
+            "revenue": round(float(row["revenue"] or 0), 2),
+            "orders": int(row["orders"] or 0),
+            "quantity_sold": int(row["quantity_sold"] or 0),
+            "profit_margin": round((float(row["profit"] or 0) / float(row["revenue"] or 1) * 100), 2) if float(row["revenue"] or 0) > 0 else 0.0,
         }
         for row in result
     ]
@@ -586,8 +641,14 @@ def get_least_profitable_products():
     query = text("""
         SELECT
             product_name,
-            COALESCE(SUM(profit), 0) AS profit
+            COALESCE(MAX(brand), 'Unknown') AS brand,
+            COALESCE(MAX(product_category), 'Unknown') AS category,
+            COALESCE(SUM(total_amount), 0) AS revenue,
+            COALESCE(SUM(profit), 0) AS profit,
+            COUNT(DISTINCT invoice_id) AS orders,
+            COALESCE(SUM(quantity), 0) AS quantity_sold
         FROM sales
+        WHERE product_name IS NOT NULL AND TRIM(product_name) <> ''
         GROUP BY product_name
         ORDER BY profit ASC
         LIMIT 10
@@ -599,7 +660,13 @@ def get_least_profitable_products():
     return [
         {
             "product_name": row["product_name"],
-            "profit": round(float(row["profit"] or 0), 2)
+            "brand": row["brand"],
+            "category": row["category"],
+            "profit": round(float(row["profit"] or 0), 2),
+            "revenue": round(float(row["revenue"] or 0), 2),
+            "orders": int(row["orders"] or 0),
+            "quantity_sold": int(row["quantity_sold"] or 0),
+            "profit_margin": round((float(row["profit"] or 0) / float(row["revenue"] or 1) * 100), 2) if float(row["revenue"] or 0) > 0 else 0.0,
         }
         for row in result
     ]
